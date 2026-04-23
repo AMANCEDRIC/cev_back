@@ -7,13 +7,17 @@ import com.google.zxing.EncodeHintType;
 import com.google.zxing.MultiFormatWriter;
 import com.google.zxing.client.j2se.MatrixToImageWriter;
 import com.google.zxing.common.BitMatrix;
+import jakarta.annotation.PostConstruct;
 import jakarta.enterprise.context.ApplicationScoped;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
 import org.jboss.logging.Logger;
 
-import javax.crypto.Mac;
-import javax.crypto.spec.SecretKeySpec;
 import java.io.ByteArrayOutputStream;
+import java.io.InputStream;
+import java.nio.charset.StandardCharsets;
+import java.security.*;
+import java.security.spec.PKCS8EncodedKeySpec;
+import java.security.spec.X509EncodedKeySpec;
 import java.time.LocalDate;
 import java.time.format.DateTimeFormatter;
 import java.util.Base64;
@@ -34,10 +38,10 @@ import java.util.stream.Collectors;
 public class CevService {
 
     private static final Logger LOG = Logger.getLogger(CevService.class);
-    private static final String HMAC_ALGO = "HmacSHA256";
+    private static final String SIGN_ALGO = "SHA256withECDSA";
 
-    @ConfigProperty(name = "cev.signature.secret")
-    String secretKey;
+    private PrivateKey privateKey;
+    private PublicKey publicKey;
 
     @ConfigProperty(name = "cev.organisation.code", defaultValue = "CEV")
     String organisationCode;
@@ -60,22 +64,50 @@ public class CevService {
     private static final char US = '\u001F'; // Unit Separator
     private static final char RS = '\u001E'; // Record Separator
 
-    // -----------------------------------------------
-    // 1. SIGNATURE HMAC-SHA256 (2D-Doc style)
-    // -----------------------------------------------
- 
-    /**
-     * Calcule la signature HMAC-SHA256 d'un texte brut.
-     */
+    @PostConstruct
+    public void init() {
+        try {
+            this.privateKey = loadPrivateKey("/META-INF/privateKey.pem");
+            this.publicKey = loadPublicKey("/META-INF/publicKey.pem");
+            LOG.info("Clés ECDSA chargées avec succès pour 2D-Doc.");
+        } catch (Exception e) {
+            LOG.error("Erreur fatale : Impossible de charger les clés ECDSA depuis META-INF.", e);
+        }
+    }
+
+    private PrivateKey loadPrivateKey(String path) throws Exception {
+        String key = readPemFile(path);
+        byte[] encoded = Base64.getMimeDecoder().decode(key);
+        PKCS8EncodedKeySpec keySpec = new PKCS8EncodedKeySpec(encoded);
+        KeyFactory kf = KeyFactory.getInstance("EC");
+        return kf.generatePrivate(keySpec);
+    }
+
+    private PublicKey loadPublicKey(String path) throws Exception {
+        String key = readPemFile(path);
+        byte[] encoded = Base64.getMimeDecoder().decode(key);
+        X509EncodedKeySpec keySpec = new X509EncodedKeySpec(encoded);
+        KeyFactory kf = KeyFactory.getInstance("EC");
+        return kf.generatePublic(keySpec);
+    }
+
+    private String readPemFile(String path) throws Exception {
+        try (InputStream is = getClass().getResourceAsStream(path)) {
+            if (is == null) throw new RuntimeException("Fichier non trouvé: " + path);
+            String content = new String(is.readAllBytes(), StandardCharsets.UTF_8);
+            return content.replaceAll("-----(BEGIN|END) (PRIVATE|PUBLIC) KEY-----", "").replaceAll("\\s", "");
+        }
+    }
+
     public String signerTexte(String texte) {
         try {
-            Mac mac = Mac.getInstance(HMAC_ALGO);
-            SecretKeySpec keySpec = new SecretKeySpec(secretKey.getBytes(java.nio.charset.StandardCharsets.UTF_8), HMAC_ALGO);
-            mac.init(keySpec);
-            byte[] hashBytes = mac.doFinal(texte.getBytes(java.nio.charset.StandardCharsets.UTF_8));
-            return bytesToHex(hashBytes);
+            Signature sig = Signature.getInstance(SIGN_ALGO);
+            sig.initSign(privateKey);
+            sig.update(texte.getBytes(StandardCharsets.UTF_8));
+            byte[] signature = sig.sign();
+            return bytesToHex(signature);
         } catch (Exception e) {
-            LOG.errorf("Erreur signature HMAC : %s", e.getMessage());
+            LOG.errorf("Erreur signature ECDSA : %s", e.getMessage());
             throw new RuntimeException("Erreur lors de la signature du document", e);
         }
     }
@@ -95,10 +127,10 @@ public class CevService {
         String separator = dataPart.endsWith(String.valueOf(US)) ? "" : String.valueOf(US);
         
         String totalToSign = dataPart + separator + "XY";
-        String hash = signerTexte(totalToSign);
-        String signature = encodeBase32(hexToBytes(hash)).replace("=", "");
+        String signatureHex = signerTexte(totalToSign);
+        String signatureB32 = encodeBase32(hexToBytes(signatureHex));
         
-        return totalToSign + signature;
+        return totalToSign + signatureB32;
     }
 
     public String buildDataPart(String reference, String nom, String prenom,
@@ -244,12 +276,16 @@ public class CevService {
             String signatureSoumise = payloadComplet.substring(sigIdx + 2);
 
             String hashAttendu = signerTexte(prefixPlusData);
-            String signatureAttendue = encodeBase32(hexToBytes(hashAttendu)).replace("=", "");
-
-            // Comparaison résistante aux timing attacks
-            return MessageDigestComparer.isEqual(signatureAttendue, signatureSoumise);
+            // On ne peut pas comparer le hash direct en ECDSA car il est non-déterministe (parfois)
+            // Mais pour 2D-Doc on vérifie la signature soumise avec la clé publique.
+            Signature sig = Signature.getInstance(SIGN_ALGO);
+            sig.initVerify(publicKey);
+            sig.update(prefixPlusData.getBytes(StandardCharsets.UTF_8));
+            
+            byte[] sigBytes = decodeBase32(signatureSoumise);
+            return sig.verify(sigBytes);
         } catch (Exception e) {
-            LOG.warnf("Erreur vérification DataMatrix : %s", e.getMessage());
+            LOG.warnf("Erreur vérification DataMatrix ECDSA : %s", e.getMessage());
             return false;
         }
     }
@@ -297,8 +333,8 @@ public class CevService {
         result.put("CERT_ID", payload.substring(8, 12));
         
         // Extraction des données après le header
-        int rsIdx = payload.indexOf(RS);
-        String dataPart = rsIdx > 22 ? payload.substring(22, rsIdx) : (payload.length() > 22 ? payload.substring(22) : "");
+        int sigIdx = payload.lastIndexOf("XY");
+        String dataPart = sigIdx > 22 ? payload.substring(22, sigIdx) : (payload.length() > 22 ? payload.substring(22) : "");
         
         if (!dataPart.isEmpty()) {
             String[] fields = dataPart.split(String.valueOf(US));
@@ -311,8 +347,8 @@ public class CevService {
             }
         }
         
-        if (rsIdx > 0 && rsIdx < payload.length() - 1) {
-            result.put("SIGNATURE", payload.substring(rsIdx + 1));
+        if (sigIdx > 0 && sigIdx < payload.length() - 2) {
+            result.put("SIGNATURE", payload.substring(sigIdx + 2));
         }
 
         return result;
@@ -351,6 +387,31 @@ public class CevService {
         // Padding
         while (sb.length() % 8 != 0) sb.append('=');
         return sb.toString();
+    }
+
+    public byte[] decodeBase32(String base32) {
+        String alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
+        base32 = base32.toUpperCase().replaceAll("[^A-Z2-7]", "");
+        int len = base32.length();
+        int outLen = (len * 5) / 8;
+        byte[] out = new byte[outLen];
+        int buffer = 0;
+        int bitsLeft = 0;
+        int outIdx = 0;
+        for (int i = 0; i < len; i++) {
+            int val = alphabet.indexOf(base32.charAt(i));
+            if (val == -1) continue;
+            buffer <<= 5;
+            buffer |= val;
+            bitsLeft += 5;
+            if (bitsLeft >= 8) {
+                if (outIdx < outLen) {
+                    out[outIdx++] = (byte) (buffer >> (bitsLeft - 8));
+                }
+                bitsLeft -= 8;
+            }
+        }
+        return out;
     }
 
     // -----------------------------------------------
