@@ -64,8 +64,10 @@ public class VerificationResource {
     // -----------------------------------------------
     @POST
     @Operation(
-        summary = "Vérifier un document (POST — payload DataMatrix complet)",
-        description = "Soumet le contenu texte complet scanné depuis un DataMatrix pour vérification."
+        summary = "Vérifier un document (POST — payload DataMatrix complet ou référence+hash)",
+        description = "Deux modes possibles :\n" +
+                      "- **Mode Flutter/Scan** : envoyer `datamatrixPayload` avec le contenu brut du DataMatrix scanné.\n" +
+                      "- **Mode Postman/API** : envoyer `reference` + `hash` pour vérifier manuellement."
     )
     public Response verifierPost(Map<String, String> body) {
         if (body == null) {
@@ -76,23 +78,61 @@ public class VerificationResource {
         String reference = body.get("reference");
         String hash      = body.get("hash");
         String payload   = body.get("datamatrixPayload");
+        Map<String, String> parsedData = null;
 
-        // Si payload brut fourni, on le parse
-        if (payload != null) {
-            Map<String, String> parsed = cevService.parseDatamatrixPayload(payload);
-            reference = parsed.getOrDefault("01", reference);
-            // On passe le payload complet à documentService.verifier qui gère le 2D-Doc
-            hash = payload; 
+        // --- MODE 1 : Scan DataMatrix (Flutter / lecteur mobile) ---
+        // Le payload brut est envoyé directement depuis le scanner
+        if (payload != null && !payload.isBlank()) {
+            parsedData = cevService.parseDatamatrixPayload(payload);
+            reference = parsedData.get("01");
+            hash = payload; // Le payload complet sert à vérifier la signature ECDSA
+        }
+        // --- MODE 2 : Vérification manuelle (Postman / API tierce) ---
+        // On utilise la référence et le hash fournis directement
+        else if (reference != null && hash != null) {
+            // rawData sera rempli depuis la BDD via DocumentResponse
+            parsedData = null;
+        }
+        else {
+            return Response.status(Response.Status.BAD_REQUEST)
+                    .entity(Map.of(
+                        "error", "Corps invalide",
+                        "details", "Fournissez soit 'datamatrixPayload' (scan mobile), soit 'reference' + 'hash' (vérification manuelle)"
+                    )).build();
         }
 
-        if (reference == null || hash == null) {
+        if (reference == null) {
             return Response.status(Response.Status.BAD_REQUEST)
-                    .entity(Map.of("error", "Référence et hash requis")).build();
+                    .entity(Map.of("error", "Impossible d'extraire la référence du payload DataMatrix")).build();
         }
 
         VerificationResponse result = documentService.verifier(reference, hash);
+
+        // En mode scan : rawData vient du parsing du DataMatrix (source de vérité : le document physique)
+        // En mode manuel : rawData vient de la BDD (données au moment de l'émission)
+        if (parsedData != null) {
+            result.rawData = parsedData;
+        } else {
+            // On reconstitue rawData depuis les infos de la BDD pour Postman
+            result.rawData = buildRawDataFromResponse(result);
+        }
+
         int status = result.valide ? 200 : 422;
         return Response.status(status).entity(result).build();
+    }
+
+    /** Reconstitue un rawData lisible depuis les champs de la réponse (mode Postman) */
+    private Map<String, String> buildRawDataFromResponse(VerificationResponse r) {
+        if (r.reference == null) return null;
+        Map<String, String> raw = new java.util.LinkedHashMap<>();
+        raw.put("01", r.reference);
+        if (r.beneficiaireNom    != null) raw.put("02", r.beneficiaireNom);
+        if (r.beneficiairePrenom != null) raw.put("03", r.beneficiairePrenom);
+        if (r.typeDocument       != null) raw.put("type", r.typeDocument.name());
+        if (r.dateEmission       != null) raw.put("dateEmission", r.dateEmission.toString());
+        if (r.dateExpiration     != null) raw.put("dateExpiration", r.dateExpiration.toString());
+        if (r.signePar           != null) raw.put("signePar", r.signePar);
+        return raw;
     }
 
     // -----------------------------------------------

@@ -165,14 +165,12 @@ public class CevService {
         String totalToSign = payload + US + "XY";
         String signatureHex = signerTexte(totalToSign);
         
-        // Pour obtenir 104 caractères au total (XY + 102 chars), on encode en Base32 sans padding
-        String signatureB32 = encodeBase32NoPadding(hexToBytes(signatureHex));
-        if (signatureB32.length() > 101) {
-            signatureB32 = signatureB32.substring(0, 101);
-        }
+        // Encoder la signature ECDSA P-256 RAW (64 bytes) en Base32
+        // 64 bytes * 8 bits / 5 bits par char = 102.4 -> 103 chars + '=' de padding = 104 total
+        // On garde le padding complet pour respecter le standard Base32
+        String signatureB32 = encodeBase32(hexToBytes(signatureHex));
         
-        // On ajoute un '=' pour arriver à 102 chars de bloc data + XY = 104
-        return payload + US + "XY" + signatureB32 + "=";
+        return payload + US + "XY" + signatureB32;
     }
 
     public String buildDataPart(String reference, String nom, String prenom,
@@ -406,33 +404,49 @@ public class CevService {
 
     /**
      * Parse le payload d'un DataMatrix 2D-Doc.
+     *
+     * Structure : HEADER(22) + 01val[GS]02val[GS]...[US]XY[SIGNATURE]
+     *   - GS (0x1D) sépare les champs entre eux
+     *   - US (0x1F) sépare l'ensemble des données de la signature (unique dans le doc)
      */
     public Map<String, String> parseDatamatrixPayload(String payload) {
         Map<String, String> result = new java.util.LinkedHashMap<>();
         if (payload == null || payload.length() < 22) return result;
 
-        // Header (Info de base)
-        result.put("VERSION", payload.substring(2, 4));
-        result.put("AUTHORITY", payload.substring(4, 8));
-        result.put("CERT_ID", payload.substring(8, 12));
-        
-        // Extraction des données après le header
-        int sigIdx = payload.lastIndexOf("XY");
-        String dataPart = sigIdx > 22 ? payload.substring(22, sigIdx) : (payload.length() > 22 ? payload.substring(22) : "");
-        
+        // Header (Info de base — 24 caractères fixes)
+        // DC(2)+version(2)+authority(4)+certId(4)+dateEmission(4)+dateSignature(4)+typeDoc(2)+perimeter(2) = 24
+        result.put("VERSION",   payload.substring(2, 4));    // "04"
+        result.put("AUTHORITY", payload.substring(4, 8));    // "CI03"
+        result.put("CERT_ID",   payload.substring(8, 12));   // "0001"
+        result.put("TYPE_DOC",  payload.substring(20, 22));  // "15"
+        result.put("PERIMETER", payload.substring(22, 24));  // "CI"
+
+        // 1. Séparer données et signature sur le US unique
+        int usIdx = payload.indexOf(US);
+        String dataPart = usIdx > 24
+                ? payload.substring(24, usIdx)   // champs de données sans le header (24 chars)
+                : (payload.length() > 24 ? payload.substring(24) : "");
+
+        String signaturePart = usIdx > 0 ? payload.substring(usIdx + 1) : "";
+        // La signature commence après "XY"
+        if (signaturePart.startsWith("XY")) {
+            result.put("SIGNATURE", signaturePart.substring(2));
+        }
+
+        // 2. Découper les champs sur GS (0x1D) — PAS sur US
         if (!dataPart.isEmpty()) {
-            String[] fields = dataPart.split(String.valueOf(US));
+            // Supprimer un GS final éventuel avant le US
+            if (dataPart.endsWith(String.valueOf(GS))) {
+                dataPart = dataPart.substring(0, dataPart.length() - 1);
+            }
+            String[] fields = dataPart.split(String.valueOf(GS));
             for (String field : fields) {
-                if (field.length() > 2) {
-                    String tag = field.substring(0, 2);
+                if (field.length() >= 3) { // tag(2) + au moins 1 char de valeur
+                    String tag   = field.substring(0, 2);
                     String value = field.substring(2);
                     result.put(tag, value);
                 }
             }
-        }
-        
-        if (sigIdx > 0 && sigIdx < payload.length() - 2) {
-            result.put("SIGNATURE", payload.substring(sigIdx + 2));
         }
 
         return result;

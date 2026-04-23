@@ -19,4 +19,5 @@ public class VerificationResponse {
     public String signePar;
     public LocalDateTime signeLe;
     public StatutDocument statut;
+    public java.util.Map<String, String> rawData;
 }

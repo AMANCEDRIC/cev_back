@@ -88,12 +88,15 @@ public class DocumentService {
                 donnees
         );
         
-        // On récupère le hash pour la base de données
-        int sigIdx = payload.lastIndexOf("XY");
-        String dataPart = sigIdx > 0 ? payload.substring(0, sigIdx) : payload;
-        String hash = cevService.signerTexte(dataPart);
+        // IMPORTANT : On NE recalcule PAS la signature ici !
+        // ECDSA est non-déterministe : signer deux fois produit deux signatures différentes.
+        // On extrait simplement la signature déjà présente dans le payload.
+        int usIdx = payload.indexOf('\u001F'); // US = séparateur données/signature
+        String signatureBlock = (usIdx > 0 && payload.length() > usIdx + 3)
+                ? payload.substring(usIdx + 3) // après US + "XY"
+                : "";
 
-        doc.hashSignature    = hash;
+        doc.hashSignature    = signatureBlock;
         doc.datamatrixPayload = payload;
         doc.signeLe          = LocalDateTime.now();
         doc.statut           = StatutDocument.SIGNE;
@@ -182,13 +185,17 @@ public class DocumentService {
             return resp;
         }
 
-        // Pour 2D-Doc, on vérifie soit le hash directement (si fourni via API),
-        // soit on recalcule à partir du payload complet si disponible.
-        boolean valid = cevService.verifierDocument(hashSoumis); 
-        
-        // Note: Si hashSoumis n'est pas un payload complet mais juste le hash hex, 
-        // cette méthode retournera false. Dans ce cas, on peut fallback sur la référence.
-        if (!valid && doc.hashSignature != null) {
+        // Vérification ECDSA avec le payload complet
+        // hashSoumis contient soit :
+        //   - le payload DataMatrix complet (mode scan Flutter)
+        //   - un hash hexadécimal direct (mode Postman avec reference+hash)
+        boolean valid = false;
+
+        if (hashSoumis != null && hashSoumis.contains("XY") && hashSoumis.startsWith("DC")) {
+            // MODE SCAN : C'est un payload DataMatrix complet → vérification ECDSA
+            valid = cevService.verifierDocument(hashSoumis);
+        } else if (hashSoumis != null && doc.hashSignature != null) {
+            // MODE POSTMAN : Comparaison directe de la signature stockée
             valid = doc.hashSignature.equalsIgnoreCase(hashSoumis);
         }
 
