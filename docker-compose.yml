@@ -1,0 +1,103 @@
+version: '3.9'
+
+services:
+
+  # =====================================================
+  # MySQL — Base de données (dev local)
+  # =====================================================
+  mysql:
+    image: mysql:8.0
+    container_name: cev-mysql
+    restart: unless-stopped
+    environment:
+      MYSQL_DATABASE: cev_db
+      MYSQL_USER: cev_user
+      MYSQL_PASSWORD: cev_password
+      MYSQL_ROOT_PASSWORD: root_password
+      MYSQL_CHARSET: utf8mb4
+      MYSQL_COLLATION: utf8mb4_unicode_ci
+    ports:
+      - "3306:3306"
+    volumes:
+      - mysql_data:/var/lib/mysql
+    command: --character-set-server=utf8mb4 --collation-server=utf8mb4_unicode_ci
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "cev_user", "-pcev_password"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # =====================================================
+  # MinIO — Stockage objets (compatible S3)
+  # =====================================================
+  minio:
+    image: minio/minio:latest
+    container_name: cev-minio
+    restart: unless-stopped
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    ports:
+      - "9000:9000"   # API S3
+      - "9001:9001"   # Console web
+    volumes:
+      - minio_data:/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+
+  # =====================================================
+  # MailHog — Serveur SMTP de test (catch-all)
+  # =====================================================
+  mailhog:
+    image: mailhog/mailhog:latest
+    container_name: cev-mailhog
+    restart: unless-stopped
+    ports:
+      - "1025:1025"   # SMTP
+      - "8025:8025"   # Interface web
+    logging:
+      driver: none
+
+  # =====================================================
+  # Quarkus Backend (profil dev)
+  # =====================================================
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: cev-backend
+    restart: unless-stopped
+    depends_on:
+      mysql:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    environment:
+      DB_HOST: mysql
+      DB_PORT: 3306
+      DB_NAME: cev_db
+      DB_USER: cev_user
+      DB_PASSWORD: cev_password
+      MINIO_ENDPOINT: http://minio:9000
+      MINIO_ACCESS_KEY: minioadmin
+      MINIO_SECRET_KEY: minioadmin
+      MINIO_BUCKET: cev-documents
+      MAIL_HOST: mailhog
+      MAIL_PORT: 1025
+      CEV_SECRET: cev-dev-secret-key-a-changer-en-prod
+      CEV_BASE_URL: http://localhost:8080
+    ports:
+      - "8080:8080"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/q/health"]
+      interval: 20s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  mysql_data:
+  minio_data:

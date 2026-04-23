@@ -1,0 +1,329 @@
+{
+  "info": {
+    "name": "CEV Backend API",
+    "_postman_id": "9a6f73fb-f281-42a6-b24f-42af8f8121d1",
+    "description": "Collection de tests API pour CEV Backend (Quarkus + MySQL).",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    { "key": "baseUrl", "value": "http://localhost:8082" },
+    { "key": "xUserId", "value": "AGENT-001" },
+    { "key": "templateCode", "value": "CERT-REUSSITE" },
+    { "key": "importTemplateCode", "value": "ATTEST-IMPORT-001" },
+    { "key": "importId", "value": "" },
+    { "key": "importFilePath", "value": "" },
+    { "key": "reference", "value": "" },
+    { "key": "hash", "value": "" }
+  ],
+  "item": [
+    {
+      "name": "Health - GET /q/health",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": "{{baseUrl}}/q/health"
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('Status 200', function () {",
+              "    pm.response.to.have.status(200);",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "Templates",
+      "item": [
+        {
+          "name": "Templates - Create",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"code\": \"{{templateCode}}\",\n  \"libelle\": \"Certificat de reussite\",\n  \"typeDocument\": \"CERTIFICAT\",\n  \"description\": \"Template de test Postman\",\n  \"contenuQute\": \"<html><body><h1>Certificat</h1><p>Nom: {nom}</p><p>Prenom: {prenom}</p><p>Mention: {mention}</p></body></html>\",\n  \"champsJson\": \"[{\\\"key\\\":\\\"nom\\\"},{\\\"key\\\":\\\"prenom\\\"},{\\\"key\\\":\\\"mention\\\"}]\"\n}"
+            },
+            "url": "{{baseUrl}}/api/v1/templates"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status 201 ou 409', function () {",
+                  "    pm.expect([201, 409]).to.include(pm.response.code);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Templates - List",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/api/v1/templates"
+          }
+        },
+        {
+          "name": "Templates - Get By Code",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/api/v1/templates/{{templateCode}}"
+          }
+        },
+        {
+          "name": "Templates - Update",
+          "request": {
+            "method": "PUT",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"code\": \"{{templateCode}}\",\n  \"libelle\": \"Certificat de reussite (maj)\",\n  \"typeDocument\": \"CERTIFICAT\",\n  \"description\": \"Template de test Postman mis a jour\",\n  \"contenuQute\": \"<html><body><h1>Certificat MAJ</h1><p>Nom: {nom}</p><p>Prenom: {prenom}</p><p>Mention: {mention}</p></body></html>\",\n  \"champsJson\": \"[{\\\"key\\\":\\\"nom\\\"},{\\\"key\\\":\\\"prenom\\\"},{\\\"key\\\":\\\"mention\\\"}]\"\n}"
+            },
+            "url": "{{baseUrl}}/api/v1/templates/{{templateCode}}"
+          }
+        }
+      ]
+    },
+    {
+      "name": "Documents",
+      "item": [
+        {
+          "name": "Documents - Emit",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "X-User-Id", "value": "{{xUserId}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"templateCode\": \"{{templateCode}}\",\n  \"beneficiaireNom\": \"KONE\",\n  \"beneficiairePrenom\": \"Amara\",\n  \"beneficiaireEmail\": \"amara.kone@example.ci\",\n  \"sourceDonnees\": \"FORMULAIRE\",\n  \"envoyerEmail\": false,\n  \"donnees\": {\n    \"nom\": \"KONE\",\n    \"prenom\": \"Amara\",\n    \"mention\": \"Tres bien\"\n  }\n}"
+            },
+            "url": "{{baseUrl}}/api/v1/documents/emettre"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status 201', function () {",
+                  "    pm.response.to.have.status(201);",
+                  "});",
+                  "if (pm.response.code === 201) {",
+                  "    var data = pm.response.json();",
+                  "    if (data.reference) { pm.collectionVariables.set('reference', data.reference); }",
+                  "    if (data.hashSignature) { pm.collectionVariables.set('hash', data.hashSignature); }",
+                  "}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Documents - List",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/api/v1/documents?page=0&taille=20"
+          }
+        },
+        {
+          "name": "Documents - Get By Reference",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/api/v1/documents/{{reference}}"
+          }
+        },
+        {
+          "name": "Documents - Download PDF",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/api/v1/documents/{{reference}}/pdf"
+          }
+        },
+        {
+          "name": "Documents - Revoke",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "X-User-Id", "value": "ADMIN-001" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"motif\": \"Test de revocation depuis Postman\"\n}"
+            },
+            "url": "{{baseUrl}}/api/v1/documents/{{reference}}/revoquer"
+          }
+        }
+      ]
+    },
+    {
+      "name": "Verification",
+      "item": [
+        {
+          "name": "Verification - GET",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/api/v1/verification?ref={{reference}}&hash={{hash}}"
+          }
+        },
+        {
+          "name": "Verification - POST",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"reference\": \"{{reference}}\",\n  \"hash\": \"{{hash}}\"\n}"
+            },
+            "url": "{{baseUrl}}/api/v1/verification"
+          }
+        },
+        {
+          "name": "Verification - DataMatrix PNG",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/api/v1/verification/{{reference}}/datamatrix?taille=150"
+          }
+        }
+      ]
+    },
+    {
+      "name": "Template Imports",
+      "item": [
+        {
+          "name": "Template Imports - Upload PDF",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/pdf" },
+              { "key": "X-File-Name", "value": "attestation-template.pdf" },
+              { "key": "X-User-Id", "value": "{{xUserId}}" }
+            ],
+            "body": {
+              "mode": "file",
+              "file": {
+                "src": "{{importFilePath}}"
+              }
+            },
+            "url": "{{baseUrl}}/api/v1/template-imports?nom=Import%20Postman&detectMode=AUTO"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status 201', function () {",
+                  "    pm.response.to.have.status(201);",
+                  "});",
+                  "if (pm.response.code === 201) {",
+                  "    var data = pm.response.json();",
+                  "    if (data.importId) pm.collectionVariables.set('importId', data.importId);",
+                  "}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Template Imports - Get By Id",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/api/v1/template-imports/{{importId}}"
+          }
+        },
+        {
+          "name": "Template Imports - Detect Fields",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"patterns\": [\n    \"\\\\{\\\\{([a-zA-Z0-9_]+)\\\\}\\\\}\",\n    \"\\\\{([a-zA-Z0-9_]+)\\\\}\"\n  ]\n}"
+            },
+            "url": "{{baseUrl}}/api/v1/template-imports/{{importId}}/detect"
+          }
+        },
+        {
+          "name": "Template Imports - Update Field Mappings",
+          "request": {
+            "method": "PUT",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"fields\": [\n    { \"original\": \"NomPrenom\", \"mapped\": \"nom_complet\", \"required\": true },\n    { \"original\": \"dateDeb\", \"mapped\": \"dateDebut\", \"required\": true }\n  ]\n}"
+            },
+            "url": "{{baseUrl}}/api/v1/template-imports/{{importId}}/fields"
+          }
+        },
+        {
+          "name": "Template Imports - Publish",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"code\": \"{{importTemplateCode}}\",\n  \"libelle\": \"Template publie depuis import\",\n  \"typeDocument\": \"ATTESTATION\",\n  \"description\": \"Template cree depuis import PDF via Postman\",\n  \"includeDataMatrix\": true\n}"
+            },
+            "url": "{{baseUrl}}/api/v1/template-imports/{{importId}}/publish"
+          }
+        },
+        {
+          "name": "Template Imports - List",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/api/v1/template-imports?page=0&size=20"
+          }
+        }
+      ]
+    },
+    {
+      "name": "Dashboard - Stats",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": "{{baseUrl}}/api/v1/dashboard/stats"
+      }
+    },
+    {
+      "name": "Templates - Disable",
+      "request": {
+        "method": "DELETE",
+        "header": [],
+        "url": "{{baseUrl}}/api/v1/templates/{{templateCode}}"
+      }
+    }
+  ]
+}
