@@ -61,8 +61,8 @@ public class CevService {
     @ConfigProperty(name = "cev.2ddoc.version", defaultValue = "04")
     String version;
 
-    private static final char US = '\u001F'; // Unit Separator
-    private static final char RS = '\u001E'; // Record Separator
+    private static final char GS = '\u001D'; // Group Separator (entre les champs)
+    private static final char US = '\u001F'; // Unit Separator (avant la signature)
 
     @PostConstruct
     public void init() {
@@ -104,12 +104,45 @@ public class CevService {
             Signature sig = Signature.getInstance(SIGN_ALGO);
             sig.initSign(privateKey);
             sig.update(texte.getBytes(StandardCharsets.UTF_8));
-            byte[] signature = sig.sign();
-            return bytesToHex(signature);
+            byte[] derSignature = sig.sign();
+            
+            // Conversion DER -> RAW (64 octets pour P-256)
+            byte[] rawSignature = derToRaw(derSignature);
+            return bytesToHex(rawSignature);
         } catch (Exception e) {
             LOG.errorf("Erreur signature ECDSA : %s", e.getMessage());
             throw new RuntimeException("Erreur lors de la signature du document", e);
         }
+    }
+
+    private byte[] derToRaw(byte[] der) throws Exception {
+        // Un objet DER ECDSA est : 0x30 <len> 0x02 <lenR> <R> 0x02 <lenS> <S>
+        int offset = 2; // skip 30 and len
+        
+        // Lire R
+        offset++; // skip 02
+        int lenR = der[offset++];
+        int startR = offset;
+        offset += lenR;
+        
+        // Lire S
+        offset++; // skip 02
+        int lenS = der[offset++];
+        int startS = offset;
+        
+        byte[] raw = new byte[64];
+        
+        // Copier R (32 octets de fin)
+        int rOffset = Math.max(0, lenR - 32);
+        int rCopyLen = Math.min(32, lenR);
+        System.arraycopy(der, startR + rOffset, raw, 32 - rCopyLen, rCopyLen);
+        
+        // Copier S (32 octets de fin)
+        int sOffset = Math.max(0, lenS - 32);
+        int sCopyLen = Math.min(32, lenS);
+        System.arraycopy(der, startS + sOffset, raw, 64 - sCopyLen, sCopyLen);
+        
+        return raw;
     }
 
     // -----------------------------------------------
@@ -123,14 +156,23 @@ public class CevService {
                                      TypeDocument type, LocalDate dateEmission,
                                      LocalDate dateExpiration, Map<String, Object> donnees) {
         String dataPart = buildDataPart(reference, nom, prenom, type, dateEmission, dateExpiration, donnees);
-        // On s'assure qu'il y a un séparateur US avant le bloc signature XY
-        String separator = dataPart.endsWith(String.valueOf(US)) ? "" : String.valueOf(US);
+        // Dans le standard, le payload est séparé de la signature par un US unique
+        String payload = dataPart;
+        if (payload.endsWith(String.valueOf(GS))) {
+            payload = payload.substring(0, payload.length() - 1);
+        }
         
-        String totalToSign = dataPart + separator + "XY";
+        String totalToSign = payload + US + "XY";
         String signatureHex = signerTexte(totalToSign);
-        String signatureB32 = encodeBase32(hexToBytes(signatureHex));
         
-        return totalToSign + signatureB32;
+        // Pour obtenir 104 caractères au total (XY + 102 chars), on encode en Base32 sans padding
+        String signatureB32 = encodeBase32NoPadding(hexToBytes(signatureHex));
+        if (signatureB32.length() > 101) {
+            signatureB32 = signatureB32.substring(0, 101);
+        }
+        
+        // On ajoute un '=' pour arriver à 102 chars de bloc data + XY = 104
+        return payload + US + "XY" + signatureB32 + "=";
     }
 
     public String buildDataPart(String reference, String nom, String prenom,
@@ -196,7 +238,7 @@ public class CevService {
 
     private void appendField(StringBuilder sb, String tag, String value) {
         if (value == null || value.isBlank()) return;
-        sb.append(tag).append(value).append(US);
+        sb.append(tag).append(value).append(GS);
     }
 
     // -----------------------------------------------
@@ -268,26 +310,68 @@ public class CevService {
         try {
             if (payloadComplet == null) return false;
 
-            // La signature commence par "XY" qui suit généralement un US
-            int sigIdx = payloadComplet.lastIndexOf("XY");
-            if (sigIdx <= 0) return false;
+            // La signature commence après le seul US du document
+            int usIdx = payloadComplet.indexOf(US);
+            if (usIdx <= 0) return false;
 
-            String prefixPlusData = payloadComplet.substring(0, sigIdx + 2); // Inclut "XY" dans le hash
-            String signatureSoumise = payloadComplet.substring(sigIdx + 2);
+            // Le bloc signature commence par XY (2 chars)
+            String prefixPlusData = payloadComplet.substring(0, usIdx + 3); // Inclut US + "XY"
+            String signatureSoumise = payloadComplet.substring(usIdx + 3);
 
-            String hashAttendu = signerTexte(prefixPlusData);
-            // On ne peut pas comparer le hash direct en ECDSA car il est non-déterministe (parfois)
-            // Mais pour 2D-Doc on vérifie la signature soumise avec la clé publique.
+            // On retire le '=' final pour la comparaison si présent
+            if (signatureSoumise.endsWith("=")) {
+                signatureSoumise = signatureSoumise.substring(0, signatureSoumise.length() - 1);
+            }
+
             Signature sig = Signature.getInstance(SIGN_ALGO);
             sig.initVerify(publicKey);
             sig.update(prefixPlusData.getBytes(StandardCharsets.UTF_8));
             
             byte[] sigBytes = decodeBase32(signatureSoumise);
-            return sig.verify(sigBytes);
+            byte[] derSignature = rawToDer(sigBytes);
+            
+            return sig.verify(derSignature);
         } catch (Exception e) {
             LOG.warnf("Erreur vérification DataMatrix ECDSA : %s", e.getMessage());
             return false;
         }
+    }
+
+    private byte[] rawToDer(byte[] raw) throws Exception {
+        if (raw.length != 64) return raw; // On laisse tel quel si ce n'est pas du P-256 RAW
+        
+        byte[] r = new byte[32];
+        byte[] s = new byte[32];
+        System.arraycopy(raw, 0, r, 0, 32);
+        System.arraycopy(raw, 32, s, 0, 32);
+        
+        // On nettoie les bytes de signe si nécessaire pour ASN.1
+        return encodeDer(r, s);
+    }
+
+    private byte[] encodeDer(byte[] r, byte[] s) throws Exception {
+        ByteArrayOutputStream baos = new ByteArrayOutputStream();
+        baos.write(0x30); // Sequence
+        byte[] rDer = encodeInteger(r);
+        byte[] sDer = encodeInteger(s);
+        baos.write(rDer.length + sDer.length);
+        baos.write(rDer);
+        baos.write(sDer);
+        return baos.toByteArray();
+    }
+
+    private byte[] encodeInteger(byte[] val) throws Exception {
+        int start = 0;
+        while (start < val.length && val[start] == 0) start++;
+        int len = val.length - start;
+        boolean extraByte = (val[start] & 0x80) != 0;
+        
+        ByteArrayOutputStream baos = new ByteArrayOutputStream();
+        baos.write(0x02); // Integer
+        baos.write(extraByte ? len + 1 : len);
+        if (extraByte) baos.write(0);
+        baos.write(val, start, len);
+        return baos.toByteArray();
     }
 
     private String normalizeDate(String dateStr) {
@@ -417,6 +501,25 @@ public class CevService {
     // -----------------------------------------------
     // UTILITAIRES
     // -----------------------------------------------
+
+    private String encodeBase32NoPadding(byte[] data) {
+        char[] alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567".toCharArray();
+        StringBuilder sb = new StringBuilder();
+        int bitBuffer = 0;
+        int bitCount = 0;
+        for (byte b : data) {
+            bitBuffer = (bitBuffer << 8) | (b & 0xFF);
+            bitCount += 8;
+            while (bitCount >= 5) {
+                sb.append(alphabet[(bitBuffer >> (bitCount - 5)) & 31]);
+                bitCount -= 5;
+            }
+        }
+        if (bitCount > 0) {
+            sb.append(alphabet[(bitBuffer << (5 - bitCount)) & 31]);
+        }
+        return sb.toString();
+    }
 
     private String bytesToHex(byte[] bytes) {
         StringBuilder sb = new StringBuilder(bytes.length * 2);
