@@ -89,6 +89,11 @@ cev:
     access-key: ${MINIO_ACCESS_KEY:minioadmin}
     secret-key: ${MINIO_SECRET_KEY:minioadmin}
     bucket: ${MINIO_BUCKET:cev-documents}
+  2ddoc:
+    authority-id: ${CEV_2DDOC_AUTHORITY:CI03}
+    cert-id: ${CEV_2DDOC_CERT_ID:0001}
+    perimeter: ${CEV_2DDOC_PERIMETER:CI}
+    version: "04"
 
 mp:
   openapi:

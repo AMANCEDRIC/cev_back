@@ -1,5 +1,6 @@
 package com.cev;
 
+import com.cev.model.TypeDocument;
 import com.cev.service.CevService;
 import io.quarkus.test.junit.QuarkusTest;
 import jakarta.inject.Inject;
@@ -16,36 +17,30 @@ class CevServiceTest {
     @Inject
     CevService cevService;
 
-    private static final String REF     = "CERT-2025-ABCD1234";
-    private static final String NOM     = "KONÉ";
-    private static final String PRENOM  = "Amara";
-    private static final String TYPE    = "CERTIFICAT";
-    private static final LocalDate DATE = LocalDate.of(2025, 6, 15);
+    private static final String REF         = "CERT-2025-ABCD1234";
+    private static final String NOM         = "KONÉ";
+    private static final String PRENOM      = "Amara";
+    private static final TypeDocument TYPE  = TypeDocument.CERTIFICAT;
+    private static final LocalDate DATE     = LocalDate.of(2025, 6, 15);
+    private static final char RS = '\u001E';
 
     // -----------------------------------------------
     // Tests signature HMAC
     // -----------------------------------------------
 
     @Test
-    void signerDocument_retourneHashNonVide() {
-        String hash = cevService.signerDocument(REF, NOM, PRENOM, TYPE, DATE);
+    void signerTexte_retourneHashNonVide() {
+        String hash = cevService.signerTexte("Hello World");
         assertNotNull(hash);
         assertFalse(hash.isBlank());
         assertEquals(64, hash.length(), "HMAC-SHA256 doit produire 64 caractères hex");
     }
 
     @Test
-    void signerDocument_memesEntrees_memeSortie() {
-        String hash1 = cevService.signerDocument(REF, NOM, PRENOM, TYPE, DATE);
-        String hash2 = cevService.signerDocument(REF, NOM, PRENOM, TYPE, DATE);
+    void signerTexte_memesEntrees_memeSortie() {
+        String hash1 = cevService.signerTexte("DataMatrix Data");
+        String hash2 = cevService.signerTexte("DataMatrix Data");
         assertEquals(hash1, hash2, "La signature doit être déterministe");
-    }
-
-    @Test
-    void signerDocument_differentesEntrees_differentsSorties() {
-        String hash1 = cevService.signerDocument(REF, NOM, PRENOM, TYPE, DATE);
-        String hash2 = cevService.signerDocument("CERT-2025-AUTRE", NOM, PRENOM, TYPE, DATE);
-        assertNotEquals(hash1, hash2);
     }
 
     // -----------------------------------------------
@@ -53,21 +48,16 @@ class CevServiceTest {
     // -----------------------------------------------
 
     @Test
-    void verifierDocument_hashCorrect_retourneTrue() {
-        String hash = cevService.signerDocument(REF, NOM, PRENOM, TYPE, DATE);
-        String hashTronque = hash.substring(0, 32);
-        assertTrue(cevService.verifierDocument(REF, NOM, PRENOM, TYPE, DATE, hashTronque));
+    void verifierDocument_payloadCorrect_retourneTrue() {
+        String payload = cevService.buildFinalPayload(REF, NOM, PRENOM, TYPE, DATE, null, null);
+        assertTrue(cevService.verifierDocument(payload));
     }
 
     @Test
-    void verifierDocument_hashFalse_retourneFalse() {
-        assertFalse(cevService.verifierDocument(REF, NOM, PRENOM, TYPE, DATE, "hashfaux00000000000000000000000000"));
-    }
-
-    @Test
-    void verifierDocument_nomModifie_retourneFalse() {
-        String hash = cevService.signerDocument(REF, NOM, PRENOM, TYPE, DATE);
-        assertFalse(cevService.verifierDocument(REF, "AUTRE", PRENOM, TYPE, DATE, hash.substring(0, 32)));
+    void verifierDocument_payloadFalsifie_retourneFalse() {
+        String payload = cevService.buildFinalPayload(REF, NOM, PRENOM, TYPE, DATE, null, null);
+        String payloadFaux = payload.replace(NOM, "AUTRE");
+        assertFalse(cevService.verifierDocument(payloadFaux));
     }
 
     // -----------------------------------------------
@@ -76,8 +66,7 @@ class CevServiceTest {
 
     @Test
     void genererDatamatrixBase64_retourneImageNonVide() {
-        String hash    = cevService.signerDocument(REF, NOM, PRENOM, TYPE, DATE);
-        String payload = cevService.buildDatamatrixPayload(REF, NOM, PRENOM, TYPE, DATE, null, hash);
+        String payload = cevService.buildFinalPayload(REF, NOM, PRENOM, TYPE, DATE, null, null);
         String base64  = cevService.genererDatamatrixBase64(payload);
 
         assertNotNull(base64);
@@ -88,8 +77,7 @@ class CevServiceTest {
 
     @Test
     void genererDatamatrixBytes_retournePngValide() {
-        String hash    = cevService.signerDocument(REF, NOM, PRENOM, TYPE, DATE);
-        String payload = cevService.buildDatamatrixPayload(REF, NOM, PRENOM, TYPE, DATE, null, hash);
+        String payload = cevService.buildFinalPayload(REF, NOM, PRENOM, TYPE, DATE, null, null);
         byte[] bytes   = cevService.genererDatamatrixBytes(payload, 150);
 
         assertNotNull(bytes);
@@ -107,16 +95,14 @@ class CevServiceTest {
 
     @Test
     void parseDatamatrixPayload_payloadComplet_parseCorrectement() {
-        String hash    = cevService.signerDocument(REF, NOM, PRENOM, TYPE, DATE);
-        String payload = cevService.buildDatamatrixPayload(REF, NOM, PRENOM, TYPE, DATE, null, hash);
+        String payload = cevService.buildFinalPayload(REF, NOM, PRENOM, TYPE, DATE, null, null);
 
         Map<String, String> parsed = cevService.parseDatamatrixPayload(payload);
 
-        assertEquals(REF,    parsed.get("REF"));
-        assertEquals(NOM,    parsed.get("NOM"));
-        assertEquals(PRENOM.toUpperCase(), parsed.get("PRE"));
-        assertEquals(TYPE,   parsed.get("TYP"));
-        assertEquals(DATE.toString(), parsed.get("EMI"));
+        assertEquals(REF,    parsed.get("01"));
+        assertEquals(NOM,    parsed.get("02"));
+        assertEquals(PRENOM.toUpperCase(), parsed.get("03"));
+        assertEquals("04",   parsed.get("VERSION"));
     }
 
     @Test

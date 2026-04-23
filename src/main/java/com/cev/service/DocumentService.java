@@ -78,22 +78,20 @@ public class DocumentService {
         donnees.put("nom", req.beneficiaireNom);
 
         // 4. SIGNATURE CEV (automatique)
-        String hash = cevService.signerDocument(
+        String payload = cevService.buildFinalPayload(
                 doc.reference,
                 doc.beneficiaireNom,
                 doc.beneficiairePrenom,
-                doc.typeDocument.name(),
-                doc.dateEmission
-        );
-        String payload = cevService.buildDatamatrixPayload(
-                doc.reference,
-                doc.beneficiaireNom,
-                doc.beneficiairePrenom,
-                doc.typeDocument.name(),
+                doc.typeDocument,
                 doc.dateEmission,
                 doc.dateExpiration,
-                hash
+                donnees
         );
+        
+        // On récupère le hash pour la base de données
+        int sigIdx = payload.lastIndexOf("XY");
+        String dataPart = sigIdx > 0 ? payload.substring(0, sigIdx) : payload;
+        String hash = cevService.signerTexte(dataPart);
 
         doc.hashSignature    = hash;
         doc.datamatrixPayload = payload;
@@ -184,10 +182,15 @@ public class DocumentService {
             return resp;
         }
 
-        boolean valid = cevService.verifierDocument(
-                doc.reference, doc.beneficiaireNom, doc.beneficiairePrenom,
-                doc.typeDocument.name(), doc.dateEmission, hashSoumis
-        );
+        // Pour 2D-Doc, on vérifie soit le hash directement (si fourni via API),
+        // soit on recalcule à partir du payload complet si disponible.
+        boolean valid = cevService.verifierDocument(hashSoumis); 
+        
+        // Note: Si hashSoumis n'est pas un payload complet mais juste le hash hex, 
+        // cette méthode retournera false. Dans ce cas, on peut fallback sur la référence.
+        if (!valid && doc.hashSignature != null) {
+            valid = doc.hashSignature.equalsIgnoreCase(hashSoumis);
+        }
 
         if (valid && doc.dateExpiration != null && LocalDate.now().isAfter(doc.dateExpiration)) {
             resp.valide  = false;

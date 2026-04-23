@@ -78,10 +78,11 @@ public class VerificationResource {
         String payload   = body.get("datamatrixPayload");
 
         // Si payload brut fourni, on le parse
-        if ((reference == null || hash == null) && payload != null) {
+        if (payload != null) {
             Map<String, String> parsed = cevService.parseDatamatrixPayload(payload);
-            reference = parsed.getOrDefault("REF", reference);
-            hash      = parsed.getOrDefault("HSH", hash);
+            reference = parsed.getOrDefault("01", reference);
+            // On passe le payload complet à documentService.verifier qui gère le 2D-Doc
+            hash = payload; 
         }
 
         if (reference == null || hash == null) {
